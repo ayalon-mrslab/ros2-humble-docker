@@ -1,0 +1,35 @@
+services:
+  ros2_humble:
+    build:
+      context: .
+      args:
+        USERNAME: ros
+        USER_UID: ${HOST_UID:-1000}
+        USER_GID: ${HOST_GID:-1000}
+    image: ros2-humble-dev
+    container_name: ros2_humble
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      # The whole workspace (src/ plus anything at its root, e.g. scripts or .repos files)
+      - ${ROS_WS:?ROS_WS is not set - run ./docker_run.sh --ws <path> or set it in .env}:/home/ros/ros2_ws
+      # The container's own build/ install/ log/: separate from the host's (CMake caches
+      # hold absolute paths), and kept when the container is recreated. One set per
+      # workspace (WS_NAME, set by docker_run.sh).
+      - build:/home/ros/ros2_ws/build
+      - install:/home/ros/ros2_ws/install
+      - log:/home/ros/ros2_ws/log
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+volumes:
+  build:
+    name: ros2_humble_${WS_NAME:-ws}_build
+  install:
+    name: ros2_humble_${WS_NAME:-ws}_install
+  log:
+    name: ros2_humble_${WS_NAME:-ws}_log

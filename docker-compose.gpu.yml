@@ -1,0 +1,14 @@
+# GPU override - used by docker_run.sh unless --no-gpu is given.
+# Manual use: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+services:
+  ros2_humble:
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
