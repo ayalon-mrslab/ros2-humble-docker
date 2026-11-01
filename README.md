@@ -41,6 +41,7 @@ docker run --rm --gpus all ubuntu:22.04 nvidia-smi
 ./docker_run.sh              # subsequent runs
 ./docker_run.sh --no-gpu     # run without NVIDIA GPU
 ./docker_run.sh --no-deps    # skip the automatic rosdep dependency install
+./docker_run.sh --image NAME # run a project image built FROM this one (see below)
 
 # Open additional shells (repeat in as many terminals as you like): when the container is
 # already running, docker_run.sh just opens a shell in it (same as docker exec)
@@ -58,9 +59,25 @@ docker compose down
 `docker_run.sh` sets `HOST_UID`/`HOST_GID`, runs `xhost +local:docker`, and adds `docker-compose.gpu.yml` on top of `docker-compose.yml` unless `--no-gpu` is given.
 Plain `docker compose up -d` (without the script) starts the container **without** GPU.
 
-On every start, `docker_run.sh` also runs `rosdep install` for the mounted workspace, installing any missing system dependencies declared in the `package.xml` files. It is quick when nothing is missing. Installed packages persist until the container is recreated (`--build`, a `--ws` change, or switching GPU mode), and are then reinstalled automatically.
+On every start, `docker_run.sh` also runs `rosdep install` for the mounted workspace, installing any missing system dependencies declared in the `package.xml` files. It is quick when nothing is missing. Installed packages persist until the container is recreated (`--build`, a `--ws` or `--image` change, or switching GPU mode), and are then reinstalled automatically. Packages rosdep can't install (e.g. from extra apt repositories) belong in a project image.
 If you add a dependency while the container is running, install it with:
 `rosdep install --from-paths src --ignore-src -r -y`
+
+## Project images (`--image`)
+
+A project can keep its own system packages in an image built `FROM ros2-humble-dev`
+(e.g. a `docker/Dockerfile` in the project), so they survive recreating the container,
+while this folder stays generic. Build that image in the project, then run it with
+`./docker_run.sh --ws <its workspace> --image <its image>` (both saved to `.env`); usually
+the project wraps this in its own script.
+
+- The image must exist: `docker_run.sh` stops with an error instead of letting compose
+  build this folder's Dockerfile under the project image's name.
+- `--build` rebuilds only `ros2-humble-dev`. A project image still sits on the old base
+  until it is rebuilt too (the script reminds you).
+- Changing the image or workspace recreates the container. Running the script again with
+  the same image (same ID) and workspace just opens another shell.
+- Back to the plain image: `--image ros2-humble-dev`.
 
 ## Choosing the mounted folder
 

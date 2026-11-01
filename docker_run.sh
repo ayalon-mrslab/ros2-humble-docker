@@ -4,11 +4,24 @@ set -e
 cd "$(dirname "$0")"
 
 CONTAINER_NAME=ros2_humble
+BASE_IMAGE=ros2-humble-dev     # built from this folder's Dockerfile
 ENV_FILE=.env
 USE_GPU=true
 INSTALL_DEPS=true
 BUILD_FLAG=""
 WS_ARG=""
+IMAGE_ARG=""
+
+# Save KEY=VALUE to .env (replacing older entries matching the KEY_PATTERN regex), only if
+# it changed - so passing the same --ws/--image every run stays quiet.
+save_setting() {
+    local key=$1 value=$2 key_pattern=$3
+    touch "${ENV_FILE}"
+    [[ "$(grep -E "^${key}=" "${ENV_FILE}" | tail -n 1 | cut -d= -f2-)" == "${value}" ]] && return
+    { grep -v -E "^${key_pattern}=" "${ENV_FILE}" || true; echo "${key}=${value}"; } > "${ENV_FILE}.tmp"
+    mv "${ENV_FILE}.tmp" "${ENV_FILE}"
+    echo "Saved ${key}=${value} to ${ENV_FILE}"
+}
 
 usage() {
     cat <<EOF
@@ -17,9 +30,11 @@ Usage: $(basename "$0") [options]
 Options:
   --ws PATH    Local workspace (the folder that contains src/) to mount (saved to
                ${ENV_FILE} for next runs). --src PATH is accepted too (its parent is used).
+  --image NAME Image to run (saved to ${ENV_FILE} for next runs). Default: ${BASE_IMAGE}.
+               For a project image built FROM ${BASE_IMAGE} (build it first, in its project).
   --no-gpu     Run without NVIDIA GPU passthrough
   --no-deps    Skip installing missing workspace dependencies (rosdep)
-  --build      Rebuild the image before starting
+  --build      Rebuild the base image (${BASE_IMAGE}) before starting
   -h, --help   Show this help
 EOF
 }
@@ -29,6 +44,9 @@ while [[ $# -gt 0 ]]; do
         --ws|--src)
             [[ -n "$2" ]] || { echo "Error: $1 requires a path" >&2; exit 1; }
             WS_ARG="$2"; shift ;;
+        --image)
+            [[ -n "$2" ]] || { echo "Error: $1 requires an image name" >&2; exit 1; }
+            IMAGE_ARG="$2"; shift ;;
         --no-gpu)   USE_GPU=false ;;
         --no-deps)  INSTALL_DEPS=false ;;
         --build)   BUILD_FLAG="--build" ;;
@@ -37,14 +55,6 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
-
-# Already running, and nothing asked to change it (--build, --ws, --no-gpu)? Just open
-# another shell in it.
-if [[ -z "${BUILD_FLAG}${WS_ARG}" ]] && $USE_GPU \
-        && [[ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null)" == "true" ]]; then
-    echo "${CONTAINER_NAME} is already running: opening a shell in it."
-    exec docker exec -it "${CONTAINER_NAME}" bash
-fi
 
 # Resolve the workspace to mount: --ws overrides (and is saved), otherwise read from .env
 if [[ -n "${WS_ARG}" ]]; then
@@ -55,10 +65,7 @@ if [[ -n "${WS_ARG}" ]]; then
         ROS_WS=$(dirname "${ROS_WS}")
         echo "Note: using '${ROS_WS}' (the workspace that contains the given src/)"
     fi
-    touch "${ENV_FILE}"
-    { grep -v -E '^ROS_WS(_SRC)?=' "${ENV_FILE}" || true; echo "ROS_WS=${ROS_WS}"; } > "${ENV_FILE}.tmp"
-    mv "${ENV_FILE}.tmp" "${ENV_FILE}"
-    echo "Saved ROS_WS to ${ENV_FILE}"
+    save_setting ROS_WS "${ROS_WS}" 'ROS_WS(_SRC)?'
 elif [[ -f "${ENV_FILE}" ]]; then
     ROS_WS=$(grep -E '^ROS_WS=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2-)
     if [[ -z "${ROS_WS}" ]]; then  # an .env from before --ws: ROS_WS_SRC was its src/
@@ -83,6 +90,29 @@ fi
 export ROS_WS
 # One set of build/install/log volumes per workspace, named after its folder
 export WS_NAME=$(basename "${ROS_WS}" | sed 's/[^a-zA-Z0-9_.-]/_/g')
+
+# Resolve the image to run: --image overrides (and is saved), otherwise .env, otherwise the
+# base image.
+if [[ -n "${IMAGE_ARG}" ]]; then
+    IMAGE="${IMAGE_ARG}"
+    save_setting IMAGE "${IMAGE}" 'IMAGE'
+elif [[ -f "${ENV_FILE}" ]]; then
+    IMAGE=$(grep -E '^IMAGE=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2-)
+fi
+export IMAGE=${IMAGE:-${BASE_IMAGE}}
+
+# Already running with this workspace and this exact image (by ID, so a rebuilt image
+# counts as a change), and not asked for --build or --no-gpu? Just open another shell in it.
+if [[ -z "${BUILD_FLAG}" ]] && $USE_GPU \
+        && [[ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null)" == "true" ]] \
+        && [[ "$(docker inspect -f '{{.Image}}' "${CONTAINER_NAME}")" \
+              == "$(docker image inspect -f '{{.Id}}' "${IMAGE}" 2>/dev/null)" ]] \
+        && [[ "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/home/ros/ros2_ws"}}{{.Source}}{{end}}{{end}}' "${CONTAINER_NAME}")" \
+              == "${ROS_WS}" ]]; then
+    echo "${CONTAINER_NAME} is already running: opening a shell in it."
+    exec docker exec -it "${CONTAINER_NAME}" bash
+fi
+
 # The volumes are mounted over these folders; create them as you, so Docker doesn't
 # create them on the host as root.
 mkdir -p "${ROS_WS}/build" "${ROS_WS}/install" "${ROS_WS}/log"
@@ -103,7 +133,7 @@ export HOST_GID=$(id -g)
 # Allow GUI apps in the container to use the host X server
 xhost +local:docker >/dev/null 2>&1 || echo "Warning: xhost failed - GUI apps may not open." >&2
 
-echo "Starting ${CONTAINER_NAME} (GPU: ${USE_GPU})"
+echo "Starting ${CONTAINER_NAME} from ${IMAGE} (GPU: ${USE_GPU})"
 echo "Mounting ${ROS_WS} -> /home/ros/ros2_ws (build/ install/ log/: volumes ros2_humble_${WS_NAME}_*)"
 # Build with the host's network (like the container, network_mode: host): behind a VPN,
 # Docker's default bridge network often can't reach the internet. Compose can't do this
@@ -111,14 +141,28 @@ echo "Mounting ${ROS_WS} -> /home/ros/ros2_ws (build/ install/ log/: volumes ros
 if [[ -n "${BUILD_FLAG}" ]]; then
     docker build --network host \
         --build-arg USERNAME=ros --build-arg USER_UID="${HOST_UID}" --build-arg USER_GID="${HOST_GID}" \
-        -t ros2-humble-dev .
+        -t "${BASE_IMAGE}" .
+    if [[ "${IMAGE}" != "${BASE_IMAGE}" ]]; then
+        echo "Note: ${IMAGE} is built FROM ${BASE_IMAGE}: rebuild it too to pick up this change." >&2
+    fi
+fi
+# Compose would build a missing image from THIS folder's Dockerfile, under whatever name
+# IMAGE has - wrong for a project image. So it must exist already.
+if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+    if [[ "${IMAGE}" == "${BASE_IMAGE}" ]]; then
+        echo "Error: image ${IMAGE} not found. Build it with: $(basename "$0") --build" >&2
+    else
+        echo "Error: image ${IMAGE} not found. Build it first (in its project, FROM ${BASE_IMAGE})." >&2
+    fi
+    exit 1
 fi
 # Compose recreates the container if the image, the GPU mode or the workspace changed
 docker compose "${COMPOSE_FILES[@]}" up -d
 
 
 # Install system dependencies declared in the workspace package.xml files.
-# Installed packages persist until the container is recreated (--build, --src change, GPU mode change).
+# Installed packages persist until the container is recreated (--build, a --ws or --image
+# change, a GPU mode change).
 if $INSTALL_DEPS; then
     echo "Checking workspace dependencies (rosdep)..."
     docker exec -e DEBIAN_FRONTEND=noninteractive "${CONTAINER_NAME}" bash -c '

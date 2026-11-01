@@ -6,7 +6,9 @@ services:
         USERNAME: ros
         USER_UID: ${HOST_UID:-1000}
         USER_GID: ${HOST_GID:-1000}
-    image: ros2-humble-dev
+    # The base image (built from this folder), or a project image built FROM it
+    # (docker_run.sh --image). docker_run.sh builds images itself and checks they exist.
+    image: ${IMAGE:-ros2-humble-dev}
     container_name: ros2_humble
     network_mode: host
     ipc: host
