@@ -3,7 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 
-CONTAINER_NAME=ros2_humble
+DEFAULT_NAME=ros2_humble
 BASE_IMAGE=ros2-humble-dev     # built from this folder's Dockerfile
 ENV_FILE=.env
 USE_GPU=true
@@ -11,6 +11,7 @@ INSTALL_DEPS=true
 BUILD_FLAG=""
 WS_ARG=""
 IMAGE_ARG=""
+NAME_ARG=""
 
 # Save KEY=VALUE to .env (replacing older entries matching the KEY_PATTERN regex), only if
 # it changed - so passing the same --ws/--image every run stays quiet.
@@ -32,6 +33,9 @@ Options:
                ${ENV_FILE} for next runs). --src PATH is accepted too (its parent is used).
   --image NAME Image to run (saved to ${ENV_FILE} for next runs). Default: ${BASE_IMAGE}.
                For a project image built FROM ${BASE_IMAGE} (build it first, in its project).
+  --name NAME  Container name (saved to ${ENV_FILE} for next runs). Default: ${DEFAULT_NAME}.
+               Also the compose project name, so containers with different names run
+               side by side (e.g. one per project).
   --no-gpu     Run without NVIDIA GPU passthrough
   --no-deps    Skip installing missing workspace dependencies (rosdep)
   --build      Rebuild the base image (${BASE_IMAGE}) before starting
@@ -47,6 +51,10 @@ while [[ $# -gt 0 ]]; do
         --image)
             [[ -n "$2" ]] || { echo "Error: $1 requires an image name" >&2; exit 1; }
             IMAGE_ARG="$2"; shift ;;
+        --name)
+            [[ "$2" =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
+                || { echo "Error: $1 needs a name of lowercase letters, digits, _ and -" >&2; exit 1; }
+            NAME_ARG="$2"; shift ;;
         --no-gpu)   USE_GPU=false ;;
         --no-deps)  INSTALL_DEPS=false ;;
         --build)   BUILD_FLAG="--build" ;;
@@ -100,6 +108,18 @@ elif [[ -f "${ENV_FILE}" ]]; then
     IMAGE=$(grep -E '^IMAGE=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2-)
 fi
 export IMAGE=${IMAGE:-${BASE_IMAGE}}
+
+# Resolve the container name the same way. It is also the compose project name: compose
+# treats containers of one project as the same service, so a second project with only a
+# different container name would replace the first one instead of running beside it.
+if [[ -n "${NAME_ARG}" ]]; then
+    CONTAINER_NAME="${NAME_ARG}"
+    save_setting CONTAINER_NAME "${CONTAINER_NAME}" 'CONTAINER_NAME'
+elif [[ -f "${ENV_FILE}" ]]; then
+    CONTAINER_NAME=$(grep -E '^CONTAINER_NAME=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2-)
+fi
+export CONTAINER_NAME=${CONTAINER_NAME:-${DEFAULT_NAME}}
+export COMPOSE_PROJECT_NAME="${CONTAINER_NAME}"
 
 # Already running with this workspace and this exact image (by ID, so a rebuilt image
 # counts as a change), and not asked for --build or --no-gpu? Just open another shell in it.

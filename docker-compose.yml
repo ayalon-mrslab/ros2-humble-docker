@@ -9,7 +9,8 @@ services:
     # The base image (built from this folder), or a project image built FROM it
     # (docker_run.sh --image). docker_run.sh builds images itself and checks they exist.
     image: ${IMAGE:-ros2-humble-dev}
-    container_name: ros2_humble
+    # Set by docker_run.sh --name (also the compose project name, COMPOSE_PROJECT_NAME)
+    container_name: ${CONTAINER_NAME:-ros2_humble}
     network_mode: host
     ipc: host
     stdin_open: true

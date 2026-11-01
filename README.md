@@ -42,18 +42,21 @@ docker run --rm --gpus all ubuntu:22.04 nvidia-smi
 ./docker_run.sh --no-gpu     # run without NVIDIA GPU
 ./docker_run.sh --no-deps    # skip the automatic rosdep dependency install
 ./docker_run.sh --image NAME # run a project image built FROM this one (see below)
+./docker_run.sh --name NAME  # container name (default ros2_humble); one per project
 
 # Open additional shells (repeat in as many terminals as you like): when the container is
 # already running, docker_run.sh just opens a shell in it (same as docker exec)
 ./docker_run.sh
-docker exec -it ros2_humble bash
+docker exec -it ros2_humble bash      # or the name given with --name
 
 # Inside the container
 colcon build --symlink-install
 source install/setup.bash   # only needed in the current shell; new shells pick it up automatically
 
-# Stop
-docker compose down
+# Stop (keeps the container: the next docker_run.sh starts it again)
+docker stop ros2_humble
+# Remove the container (the build volumes stay)
+docker compose -p ros2_humble down
 ```
 
 `docker_run.sh` sets `HOST_UID`/`HOST_GID`, runs `xhost +local:docker`, and adds `docker-compose.gpu.yml` on top of `docker-compose.yml` unless `--no-gpu` is given.
@@ -78,6 +81,17 @@ the project wraps this in its own script.
 - Changing the image or workspace recreates the container. Running the script again with
   the same image (same ID) and workspace just opens another shell.
 - Back to the plain image: `--image ros2-humble-dev`.
+
+## Several projects side by side (`--name`)
+
+`--name` sets the container name and the compose project name. Containers with different
+names are independent: each has its own workspace, image and build volumes (named after
+the workspace folder). The settings in `.env` are the last ones used, so a project should
+pass `--ws`, `--image` and `--name` every time (its own run script does).
+
+All containers use the host network, so ROS nodes of two running projects see each other.
+To keep them apart, give each project its own `ROS_DOMAIN_ID` (e.g. in its environment
+script).
 
 ## Choosing the mounted folder
 
