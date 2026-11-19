@@ -1,14 +1,17 @@
 #!/bin/bash
 # Start the ROS 2 Humble container (GPU by default) and open a shell in it.
+# The fallback for machines without VS Code; projects normally use a Dev Container.
 set -e
 cd "$(dirname "$0")"
 
 DEFAULT_NAME=ros2_humble
-BASE_IMAGE=ros2-humble-dev     # built from this folder's Dockerfile
+# Published by CI from this folder's Dockerfile (pulled when missing; --build builds it here)
+BASE_IMAGE=ghcr.io/ayalon-mrslab/ros2-humble-base:latest
 ENV_FILE=.env
 USE_GPU=true
 INSTALL_DEPS=true
 BUILD_FLAG=""
+PULL=false
 WS_ARG=""
 IMAGE_ARG=""
 NAME_ARG=""
@@ -38,7 +41,9 @@ Options:
                side by side (e.g. one per project).
   --no-gpu     Run without NVIDIA GPU passthrough
   --no-deps    Skip installing missing workspace dependencies (rosdep)
-  --build      Rebuild the base image (${BASE_IMAGE}) before starting
+  --build      Build the base image (${BASE_IMAGE}) from this folder instead of
+               pulling it - to test Dockerfile changes before publishing them
+  --pull       Pull the newest base image before starting
   -h, --help   Show this help
 EOF
 }
@@ -57,7 +62,8 @@ while [[ $# -gt 0 ]]; do
             NAME_ARG="$2"; shift ;;
         --no-gpu)   USE_GPU=false ;;
         --no-deps)  INSTALL_DEPS=false ;;
-        --build)   BUILD_FLAG="--build" ;;
+        --build)    BUILD_FLAG="--build" ;;
+        --pull)     PULL=true ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
     esac
@@ -121,12 +127,57 @@ fi
 export CONTAINER_NAME=${CONTAINER_NAME:-${DEFAULT_NAME}}
 export COMPOSE_PROJECT_NAME="${CONTAINER_NAME}"
 
+export HOST_UID=$(id -u)
+export HOST_GID=$(id -g)
+
+# Get the image. Built here (--build) for testing Dockerfile changes, with your UID/GID;
+# otherwise the published base image is pulled. Build with the host's network: behind a
+# VPN, Docker's default bridge network often can't reach the internet.
+if [[ -n "${BUILD_FLAG}" ]]; then
+    docker build --network host \
+        --build-arg USERNAME=ros --build-arg USER_UID="${HOST_UID}" --build-arg USER_GID="${HOST_GID}" \
+        -t "${BASE_IMAGE}" .
+elif $PULL; then
+    docker pull "${BASE_IMAGE}"
+fi
+if [[ -n "${BUILD_FLAG}" || "${PULL}" == true ]] && [[ "${IMAGE}" != "${BASE_IMAGE}" ]]; then
+    echo "Note: ${IMAGE} is built FROM ${BASE_IMAGE}: rebuild it too to pick up the new base." >&2
+fi
+if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+    if [[ "${IMAGE}" == "${BASE_IMAGE}" ]]; then
+        docker pull "${BASE_IMAGE}" || {
+            echo "Error: could not pull ${IMAGE}. Build it here with: $(basename "$0") --build" >&2
+            exit 1
+        }
+    else
+        echo "Error: image ${IMAGE} not found. Build it first (in its project, FROM ${BASE_IMAGE})." >&2
+        exit 1
+    fi
+fi
+
+# The published image's user is UID/GID 1000. If yours differs, run a local copy with the
+# user remapped (rebuilt from cache in a second when nothing changed), so files in the
+# workspace keep your ownership. Dev Containers do the same (updateRemoteUserUID).
+RUN_IMAGE="${IMAGE}"
+if [[ "$(docker run --rm --entrypoint stat "${IMAGE}" -c '%u:%g' /home/ros)" != "${HOST_UID}:${HOST_GID}" ]]; then
+    RUN_IMAGE="local/$(echo "${IMAGE}" | sed 's/[^a-z0-9._-]/_/g')-uid${HOST_UID}-${HOST_GID}"
+    echo "Remapping the image's user to UID/GID ${HOST_UID}:${HOST_GID} (${RUN_IMAGE})"
+    docker build --quiet -t "${RUN_IMAGE}" - >/dev/null <<EOF
+FROM ${IMAGE}
+USER root
+RUN groupmod -o -g ${HOST_GID} ros && usermod -o -u ${HOST_UID} -g ${HOST_GID} ros \
+    && chown -R ${HOST_UID}:${HOST_GID} /home/ros
+USER ros
+EOF
+fi
+export RUN_IMAGE
+
 # Already running with this workspace and this exact image (by ID, so a rebuilt image
-# counts as a change), and not asked for --build or --no-gpu? Just open another shell in it.
-if [[ -z "${BUILD_FLAG}" ]] && $USE_GPU \
+# counts as a change), and not asked for --no-gpu? Just open another shell in it.
+if $USE_GPU \
         && [[ "$(docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null)" == "true" ]] \
         && [[ "$(docker inspect -f '{{.Image}}' "${CONTAINER_NAME}")" \
-              == "$(docker image inspect -f '{{.Id}}' "${IMAGE}" 2>/dev/null)" ]] \
+              == "$(docker image inspect -f '{{.Id}}' "${RUN_IMAGE}")" ]] \
         && [[ "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/home/ros/ros2_ws"}}{{.Source}}{{end}}{{end}}' "${CONTAINER_NAME}")" \
               == "${ROS_WS}" ]]; then
     echo "${CONTAINER_NAME} is already running: opening a shell in it."
@@ -146,36 +197,11 @@ if $USE_GPU; then
     COMPOSE_FILES+=(-f docker-compose.gpu.yml)
 fi
 
-# Match container user to host user so files in ./src keep host ownership
-export HOST_UID=$(id -u)
-export HOST_GID=$(id -g)
-
 # Allow GUI apps in the container to use the host X server
 xhost +local:docker >/dev/null 2>&1 || echo "Warning: xhost failed - GUI apps may not open." >&2
 
 echo "Starting ${CONTAINER_NAME} from ${IMAGE} (GPU: ${USE_GPU})"
 echo "Mounting ${ROS_WS} -> /home/ros/ros2_ws (build/ install/ log/: volumes ros2_humble_${WS_NAME}_*)"
-# Build with the host's network (like the container, network_mode: host): behind a VPN,
-# Docker's default bridge network often can't reach the internet. Compose can't do this
-# without extra permissions, so the image is built here.
-if [[ -n "${BUILD_FLAG}" ]]; then
-    docker build --network host \
-        --build-arg USERNAME=ros --build-arg USER_UID="${HOST_UID}" --build-arg USER_GID="${HOST_GID}" \
-        -t "${BASE_IMAGE}" .
-    if [[ "${IMAGE}" != "${BASE_IMAGE}" ]]; then
-        echo "Note: ${IMAGE} is built FROM ${BASE_IMAGE}: rebuild it too to pick up this change." >&2
-    fi
-fi
-# Compose would build a missing image from THIS folder's Dockerfile, under whatever name
-# IMAGE has - wrong for a project image. So it must exist already.
-if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
-    if [[ "${IMAGE}" == "${BASE_IMAGE}" ]]; then
-        echo "Error: image ${IMAGE} not found. Build it with: $(basename "$0") --build" >&2
-    else
-        echo "Error: image ${IMAGE} not found. Build it first (in its project, FROM ${BASE_IMAGE})." >&2
-    fi
-    exit 1
-fi
 # Compose recreates the container if the image, the GPU mode or the workspace changed
 docker compose "${COMPOSE_FILES[@]}" up -d
 

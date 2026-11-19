@@ -1,14 +1,9 @@
 services:
   ros2_humble:
-    build:
-      context: .
-      args:
-        USERNAME: ros
-        USER_UID: ${HOST_UID:-1000}
-        USER_GID: ${HOST_GID:-1000}
-    # The base image (built from this folder), or a project image built FROM it
-    # (docker_run.sh --image). docker_run.sh builds images itself and checks they exist.
-    image: ${IMAGE:-ros2-humble-dev}
+    # The lab base image, or a project image built FROM it (docker_run.sh --image).
+    # docker_run.sh pulls or builds it, and sets RUN_IMAGE to a copy remapped to your
+    # UID/GID when that differs from the image's (1000).
+    image: ${RUN_IMAGE:-ghcr.io/ayalon-mrslab/ros2-humble-base:latest}
     # Set by docker_run.sh --name (also the compose project name, COMPOSE_PROJECT_NAME)
     container_name: ${CONTAINER_NAME:-ros2_humble}
     network_mode: host

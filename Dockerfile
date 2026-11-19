@@ -1,3 +1,7 @@
+# MRS lab ROS 2 Humble base image: published by CI to ghcr.io/<owner>/ros2-humble-base.
+# Holds what most lab projects share; robot-specific packages belong in each project's
+# .devcontainer/Dockerfile (see templates/). Gazebo is not included: projects use different
+# versions (Go2: Fortress, Crazyflie: Harmonic).
 FROM ubuntu:22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -31,13 +35,21 @@ RUN set -eux; \
     dpkg -i /tmp/ros2-apt-source.deb; \
     rm /tmp/ros2-apt-source.deb
 
-# ROS 2 Humble desktop + development tools
+# ROS 2 Humble desktop, lab-wide ROS packages and development tools
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         ros-humble-desktop \
         ros-dev-tools \
         ros-humble-rmw-cyclonedds-cpp \
-        ros-humble-rosidl-generator-dds-idl \
-        libyaml-cpp-dev \
+        ros-humble-navigation2 \
+        ros-humble-nav2-bringup \
+        ros-humble-slam-toolbox \
+        ros-humble-robot-localization \
+        ros-humble-ros2-control \
+        ros-humble-ros2-controllers \
+        ros-humble-xacro \
+        ros-humble-joint-state-publisher-gui \
+        ros-humble-tf2-tools \
+        ros-humble-rqt-tf-tree \
         python3-pip \
         python3-colcon-common-extensions \
         build-essential \
@@ -46,11 +58,14 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
         bash-completion \
         nano \
         vim \
+        gedit \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rosdep init
 
-# Non-root user matching the host UID/GID (so files in the mounted src/ keep host ownership)
+# Non-root user. The published image uses UID/GID 1000; on hosts with another UID, Dev
+# Containers (updateRemoteUserUID) and docker_run.sh remap it, so files in the mounted
+# workspace keep host ownership.
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} \
     && usermod -aG video ${USERNAME} \

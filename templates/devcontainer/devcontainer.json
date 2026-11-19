@@ -1,0 +1,59 @@
+// VS Code Dev Container for a ROS 2 Humble project.
+// Copied from ros2-humble-docker/templates/devcontainer/ - see its README.
+// The repo that contains this .devcontainer/ folder is the ROS workspace (it holds src/).
+{
+  "name": "my_project",  // shown in VS Code - set to the project name
+
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": {
+      "BASE_IMAGE": "ghcr.io/ayalon-mrslab/ros2-humble-base:latest"
+    },
+    // Build with the host's network: behind a VPN, Docker's default bridge network often
+    // can't reach the internet (apt then fails with "Connection failed")
+    "options": ["--network=host"]
+  },
+
+  // The repo is the workspace, at the same path as in every lab image
+  "workspaceMount": "source=${localWorkspaceFolder},target=/home/ros/ros2_ws,type=bind",
+  "workspaceFolder": "/home/ros/ros2_ws",
+
+  // Run as the image's user, remapped to your host UID/GID so files keep your ownership
+  "remoteUser": "ros",
+  "updateRemoteUserUID": true,
+
+  // The container's build/ install/ log/ live in volumes: separate from any host build
+  // (CMake caches hold absolute paths) and kept when the container is rebuilt.
+  "mounts": [
+    "source=ros2ws-${devcontainerId}-build,target=/home/ros/ros2_ws/build,type=volume",
+    "source=ros2ws-${devcontainerId}-install,target=/home/ros/ros2_ws/install,type=volume",
+    "source=ros2ws-${devcontainerId}-log,target=/home/ros/ros2_ws/log,type=volume",
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind"
+  ],
+  // On the host, before the container starts: create the volumes' mount points as you (else
+  // Docker creates them as root), and let the container open windows on your display.
+  "initializeCommand": "mkdir -p \"${localWorkspaceFolder}/build\" \"${localWorkspaceFolder}/install\" \"${localWorkspaceFolder}/log\" && (xhost +local:docker >/dev/null 2>&1 || true)",
+
+  // Host network: ROS 2 discovery reaches the robot and other machines on the LAN
+  "runArgs": ["--network=host", "--ipc=host"],
+  // NVIDIA GPU when the host has one (and nvidia-container-toolkit), otherwise none
+  "hostRequirements": { "gpu": "optional" },
+
+  "containerEnv": {
+    "DISPLAY": "${localEnv:DISPLAY}",
+    "QT_X11_NO_MITSHM": "1",
+    "NVIDIA_DRIVER_CAPABILITIES": "all",
+    "ROS_DOMAIN_ID": "${localEnv:ROS_DOMAIN_ID:0}"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools-extension-pack",
+        "ms-python.python",
+        "redhat.vscode-xml"
+      ]
+    }
+  }
+}

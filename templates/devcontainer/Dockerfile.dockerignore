@@ -1,0 +1,8 @@
+# Build context for the Dockerfile next to this file (used instead of the repo's own
+# .dockerignore): only the package manifests and colcon ignore markers. Source edits then
+# never invalidate the dependency layer, and the context stays small.
+*
+!src/**/package.xml
+!src/**/COLCON_IGNORE
+!src/**/AMENT_IGNORE
+!src/**/CATKIN_IGNORE
